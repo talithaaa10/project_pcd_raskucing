@@ -1,6 +1,5 @@
 import io
 import os
-import socket
 import struct
 import time
 import numpy as np
@@ -8,50 +7,50 @@ import pandas as pd
 import streamlit as st
 from PIL import Image, ImageOps
 
+# Dukungan tambahan jika pengguna mengunggah foto format iPhone (HEIC)
 try:
     import pillow_heif
     pillow_heif.register_heif_opener()
 except Exception:
     pass
 
-# ==================== KONFIGURASI HALAMAN STREAMLIT ====================
+# ==================== 1. PENGATURAN HALAMAN ====================
 st.set_page_config(
-    page_title="CatScan AI - Identifikasi Ras Kucing (MobileNetV2)",
-    page_icon="🐱",
+    page_title="Aplikasi Identifikasi Ras Kucing",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
 
-# ==================== CSS RESPONSIF (DESKTOP & HP / MOBILE) ====================
+# Desain tampilan (CSS) agar rapi di layar Laptop maupun HP
 st.markdown(
     """
     <style>
     .block-container {
         padding-top: 1.2rem;
         padding-bottom: 2.5rem;
-        max-width: 1180px;
+        max-width: 1150px;
     }
-    .hero-card {
+    /* Sembunyikan ikon link di sebelah judul/heading Streamlit */
+    [data-testid="stHeaderActionElements"],
+    .stMarkdown h1 a,
+    .stMarkdown h2 a,
+    .stMarkdown h3 a,
+    .stMarkdown h4 a {
+        display: none !important;
+    }
+    .judul-utama {
         background: linear-gradient(135deg, #1e293b 0%, #334155 100%);
         color: #ffffff;
-        padding: 1.3rem 1.5rem;
-        border-radius: 16px;
+        padding: 1.2rem 1.5rem;
+        border-radius: 14px;
         margin-bottom: 1rem;
-        box-shadow: 0 4px 15px rgba(0,0,0,0.12);
     }
-    .hero-card h1 {
-        font-size: 1.6rem;
-        margin: 0 0 0.35rem 0;
+    .judul-utama h1 {
+        font-size: 1.55rem;
+        margin: 0;
         color: #ffffff !important;
     }
-    .hero-card p {
-        font-size: 0.94rem;
-        margin: 0;
-        opacity: 0.92;
-        line-height: 1.45;
-    }
-    /* Kotak informasi nama file setelah Select File */
-    .file-selected-card {
+    .kotak-file-terpilih {
         background: #eff6ff;
         border: 2px solid #3b82f6;
         color: #1e3a8a;
@@ -60,33 +59,36 @@ st.markdown(
         margin-top: 0.5rem;
         margin-bottom: 0.75rem;
     }
-    /* Kartu Hasil Prediksi Utama */
-    .pred-badge {
+    .kotak-hasil {
         background: linear-gradient(135deg, #0f766e 0%, #14b8a6 100%);
         color: white;
         padding: 1.2rem 1.4rem;
         border-radius: 14px;
         margin-bottom: 1rem;
-        box-shadow: 0 4px 12px rgba(20, 184, 166, 0.25);
     }
-    .pred-badge h2 {
+    .kotak-hasil h2 {
         margin: 0;
-        font-size: 1.5rem;
+        font-size: 1.45rem;
         color: #ffffff !important;
     }
-    .pred-badge .conf-pill {
+    .label-akurasi {
         display: inline-block;
         margin-top: 0.45rem;
-        background: rgba(255,255,255,0.22);
+        background: rgba(255, 255, 255, 0.22);
         padding: 0.25rem 0.75rem;
         border-radius: 999px;
         font-weight: 600;
         font-size: 0.9rem;
     }
+    .judul-ras-katalog {
+        font-size: 1.2rem;
+        font-weight: 700;
+        margin-bottom: 0.2rem;
+    }
     .stButton > button {
         width: 100%;
         border-radius: 10px;
-        min-height: 3rem;
+        min-height: 2.9rem;
         font-weight: 700;
         font-size: 1rem;
     }
@@ -96,18 +98,11 @@ st.markdown(
             padding-left: 0.75rem;
             padding-right: 0.75rem;
         }
-        .hero-card {
-            padding: 0.95rem 1.05rem;
-            border-radius: 12px;
-        }
-        .hero-card h1 {
+        .judul-utama h1 {
             font-size: 1.25rem;
         }
-        .hero-card p {
-            font-size: 0.85rem;
-        }
-        .pred-badge h2 {
-            font-size: 1.25rem;
+        .kotak-hasil h2 {
+            font-size: 1.2rem;
         }
     }
     </style>
@@ -116,148 +111,228 @@ st.markdown(
 )
 
 
-# ==================== ENGINE INFERENSI TFLITE MURNI (TANPA DEPENDENSI C++) ====================
-class NativeTFLiteRunner:
+# ==================== 2. DATA 5 RAS KUCING ====================
+DAFTAR_RAS = [
+    "Bengal",
+    "British Shorthair",
+    "Domestic Short Hair",
+    "Persian",
+    "Turkish Angora",
+]
+
+INFO_RAS_KUCING = {
+    "Bengal": {
+        "nama_lengkap": "Kucing Bengal",
+        "jumlah_data": 2477,
+        "ciri_fisik": (
+            "Tubuh ramping dan berotot dengan corak bulu tutul atau marmer seperti macan tutul. "
+            "Bulunya pendek, rapat, dan tampak berkilau."
+        ),
+        "karakter": "Sangat aktif, cerdas, suka memanjat tempat tinggi, dan sering tertarik bermain air.",
+        "perawatan": (
+            "Sediakan tempat bermain atau panjatan, ajak bermain setiap hari, "
+            "dan sikat bulunya seminggu sekali."
+        ),
+        "kesehatan": "Perlu pemeriksaan rutin kesehatan jantung dan mata.",
+    },
+    "British Shorthair": {
+        "nama_lengkap": "Kucing British Shorthair",
+        "jumlah_data": 567,
+        "ciri_fisik": (
+            "Tubuh bulat dan berisi, dada lebar, pipi tembem, mata bulat besar, "
+            "serta bulu pendek yang sangat tebal dan halus."
+        ),
+        "karakter": "Tenang, santai, mandiri, dan ramah di dalam rumah.",
+        "perawatan": (
+            "Atur porsi makan agar tidak kegemukan (obesitas) dan sisir bulunya 2–3 kali seminggu."
+        ),
+        "kesehatan": "Jaga berat badan tetap ideal serta perhatikan kebersihan gigi dan gusi.",
+    },
+    "Domestic Short Hair": {
+        "nama_lengkap": "Kucing Domestik (Domestic Short Hair)",
+        "jumlah_data": 53027,
+        "ciri_fisik": (
+            "Tubuh proporsional dan lincah dengan bulu pendek rapat. Memiliki banyak variasi warna "
+            "seperti belang (tabby), oranye, belang tiga (calico), hitam, atau putih."
+        ),
+        "karakter": "Mudah beradaptasi, pintar, mandiri, dan memiliki daya tahan tubuh yang kuat.",
+        "perawatan": (
+            "Perawatan sangat mudah, cukup disisir seminggu sekali, beri makanan bergizi, "
+            "serta vaksin dan obat cacing secara rutin."
+        ),
+        "kesehatan": "Umumnya memiliki fisik yang kuat; pastikan rutin vaksinasi dan bebas kutu.",
+    },
+    "Persian": {
+        "nama_lengkap": "Kucing Persia (Persian)",
+        "jumlah_data": 4018,
+        "ciri_fisik": (
+            "Wajah bulat dan datar, hidung pesek, mata bulat besar, "
+            "tubuh pendek berisi dengan bulu yang sangat panjang dan lebat."
+        ),
+        "karakter": "Kalem, manja, lembut, dan menyukai suasana rumah yang tenang serta sejuk.",
+        "perawatan": (
+            "Wajib disisir setiap hari agar bulu tidak kusut, bersihkan area sekitar mata secara rutin, "
+            "dan pelihara di dalam ruangan."
+        ),
+        "kesehatan": "Jaga kebersihan kulit dari jamur serta perhatikan saluran pernapasan dan ginjal.",
+    },
+    "Turkish Angora": {
+        "nama_lengkap": "Kucing Angora Turki (Turkish Angora)",
+        "jumlah_data": 750,
+        "ciri_fisik": (
+            "Tubuh ramping dan anggun dengan bulu sedang-panjang yang halus seperti sutra. "
+            "Wajah sedikit meruncing, telinga tegak, dan bulu ekor mengembang."
+        ),
+        "karakter": "Aktif, cerdas, lincah, dan senang bermain bersama pemiliknya.",
+        "perawatan": (
+            "Sisir bulu 2–3 kali seminggu, sediakan mainan, serta jaga kebersihan telinga dan mata."
+        ),
+        "kesehatan": "Perhatikan kesehatan pendengaran (terutama yang berbulu putih mata biru) dan jantung.",
+    },
+}
+
+
+# ==================== 3. PEMBACA MODEL TFLITE ====================
+class PenjalanModelTFLite:
     """
-    Mengeksekusi grafik model_kucing.tflite (TFL3 FlatBuffer MobileNetV2 float16/float32)
-    secara langsung menggunakan NumPy sehingga tetap berjalan cepat dan akurat
-    di Python versi apa pun (termasuk Python 3.12 / 3.13 di Streamlit Community Cloud).
+    Menjalankan file model_kucing.tflite menggunakan NumPy jika library TensorFlow
+    belum terpasang di lingkungan Python.
     """
 
-    def __init__(self, model_path: str):
-        with open(model_path, "rb") as f:
+    def __init__(self, lokasi_model: str):
+        with open(lokasi_model, "rb") as f:
             self.buf = f.read()
-        self._parse_and_compile()
+        self._siapkan_model()
 
-    def _get_vtable(self, pos):
-        vtable_offset = struct.unpack_from("<i", self.buf, pos)[0]
-        vtable = pos - vtable_offset
-        vsize, _ = struct.unpack_from("<HH", self.buf, vtable)
+    def _baca_vtable(self, pos):
+        offset = struct.unpack_from("<i", self.buf, pos)[0]
+        vtable = pos - offset
+        ukuran, _ = struct.unpack_from("<HH", self.buf, vtable)
         return [
             struct.unpack_from("<H", self.buf, vtable + 4 + 2 * i)[0]
-            for i in range((vsize - 4) // 2)
+            for i in range((ukuran - 4) // 2)
         ]
 
-    def _get_table_vector(self, pos, field_idx):
-        offsets = self._get_vtable(pos)
-        if field_idx >= len(offsets) or offsets[field_idx] == 0:
+    def _baca_vektor_tabel(self, pos, idx):
+        offsets = self._baca_vtable(pos)
+        if idx >= len(offsets) or offsets[idx] == 0:
             return []
-        vec_pos = pos + offsets[field_idx]
-        vec_pos += struct.unpack_from("<I", self.buf, vec_pos)[0]
-        length = struct.unpack_from("<I", self.buf, vec_pos)[0]
+        vpos = pos + offsets[idx]
+        vpos += struct.unpack_from("<I", self.buf, vpos)[0]
+        panjang = struct.unpack_from("<I", self.buf, vpos)[0]
         return [
-            vec_pos + 4 + 4 * i + struct.unpack_from("<I", self.buf, vec_pos + 4 + 4 * i)[0]
-            for i in range(length)
+            vpos + 4 + 4 * i + struct.unpack_from("<I", self.buf, vpos + 4 + 4 * i)[0]
+            for i in range(panjang)
         ]
 
-    def _get_int_vector(self, pos, field_idx):
-        offsets = self._get_vtable(pos)
-        if field_idx >= len(offsets) or offsets[field_idx] == 0:
+    def _baca_vektor_int(self, pos, idx):
+        offsets = self._baca_vtable(pos)
+        if idx >= len(offsets) or offsets[idx] == 0:
             return []
-        vec_pos = pos + offsets[field_idx]
-        vec_pos += struct.unpack_from("<I", self.buf, vec_pos)[0]
-        length = struct.unpack_from("<I", self.buf, vec_pos)[0]
-        return list(struct.unpack_from(f"<{length}i", self.buf, vec_pos + 4))
+        vpos = pos + offsets[idx]
+        vpos += struct.unpack_from("<I", self.buf, vpos)[0]
+        panjang = struct.unpack_from("<I", self.buf, vpos)[0]
+        return list(struct.unpack_from(f"<{panjang}i", self.buf, vpos + 4))
 
-    def _get_byte_slice(self, pos, field_idx):
-        offsets = self._get_vtable(pos)
-        if field_idx >= len(offsets) or offsets[field_idx] == 0:
+    def _baca_byte(self, pos, idx):
+        offsets = self._baca_vtable(pos)
+        if idx >= len(offsets) or offsets[idx] == 0:
             return b""
-        vec_pos = pos + offsets[field_idx]
-        vec_pos += struct.unpack_from("<I", self.buf, vec_pos)[0]
-        length = struct.unpack_from("<I", self.buf, vec_pos)[0]
-        return memoryview(self.buf)[vec_pos + 4 : vec_pos + 4 + length]
+        vpos = pos + offsets[idx]
+        vpos += struct.unpack_from("<I", self.buf, vpos)[0]
+        panjang = struct.unpack_from("<I", self.buf, vpos)[0]
+        return memoryview(self.buf)[vpos + 4 : vpos + 4 + panjang]
 
-    def _get_scalar(self, pos, field_idx, fmt, default=0):
-        offsets = self._get_vtable(pos)
-        if field_idx >= len(offsets) or offsets[field_idx] == 0:
+    def _baca_nilai(self, pos, idx, fmt, default=0):
+        offsets = self._baca_vtable(pos)
+        if idx >= len(offsets) or offsets[idx] == 0:
             return default
-        return struct.unpack_from(fmt, self.buf, pos + offsets[field_idx])[0]
+        return struct.unpack_from(fmt, self.buf, pos + offsets[idx])[0]
 
-    def _get_table(self, pos, field_idx):
-        offsets = self._get_vtable(pos)
-        if field_idx >= len(offsets) or offsets[field_idx] == 0:
+    def _baca_tabel(self, pos, idx):
+        offsets = self._baca_vtable(pos)
+        if idx >= len(offsets) or offsets[idx] == 0:
             return None
-        t_pos = pos + offsets[field_idx]
-        return t_pos + struct.unpack_from("<I", self.buf, t_pos)[0]
+        tpos = pos + offsets[idx]
+        return tpos + struct.unpack_from("<I", self.buf, tpos)[0]
 
-    def _parse_and_compile(self):
+    def _siapkan_model(self):
         root = struct.unpack_from("<I", self.buf, 0)[0]
-        op_codes = self._get_table_vector(root, 1)
-        buffers = self._get_table_vector(root, 4)
-        sg = self._get_table_vector(root, 2)[0]
-        tensor_tables = self._get_table_vector(sg, 0)
-        self.inputs = self._get_int_vector(sg, 1)
-        self.outputs = self._get_int_vector(sg, 2)
-        operators = self._get_table_vector(sg, 3)
+        op_codes = self._baca_vektor_tabel(root, 1)
+        buffers = self._baca_vektor_tabel(root, 4)
+        sg = self._baca_vektor_tabel(root, 2)[0]
+        tensor_tables = self._baca_vektor_tabel(sg, 0)
+        self.inputs = self._baca_vektor_int(sg, 1)
+        self.outputs = self._baca_vektor_int(sg, 2)
+        operators = self._baca_vektor_tabel(sg, 3)
 
-        dtype_map = {0: np.float32, 1: np.float16, 2: np.int32, 9: np.int8}
+        peta_tipe = {0: np.float32, 1: np.float16, 2: np.int32, 9: np.int8}
         self.tensors = [None] * len(tensor_tables)
 
         for idx, t in enumerate(tensor_tables):
-            shape = tuple(self._get_int_vector(t, 0))
-            ttype = self._get_scalar(t, 1, "<b", 0)
-            buf_idx = self._get_scalar(t, 2, "<I", 0)
-            raw = self._get_byte_slice(buffers[buf_idx], 0)
-            if len(raw) > 0 and ttype in dtype_map:
-                arr = np.frombuffer(raw, dtype=dtype_map[ttype]).reshape(shape)
+            shape = tuple(self._baca_vektor_int(t, 0))
+            ttype = self._baca_nilai(t, 1, "<b", 0)
+            buf_idx = self._baca_nilai(t, 2, "<I", 0)
+            raw = self._baca_byte(buffers[buf_idx], 0)
+            if len(raw) > 0 and ttype in peta_tipe:
+                arr = np.frombuffer(raw, dtype=peta_tipe[ttype]).reshape(shape)
                 self.tensors[idx] = arr.astype(np.float32) if ttype == 1 else arr.copy()
 
-        self.exec_ops = []
+        self.daftar_operasi = []
         for op in operators:
-            opcode_idx = self._get_scalar(op, 0, "<I", 0)
+            opcode_idx = self._baca_nilai(op, 0, "<I", 0)
             oc = op_codes[opcode_idx]
-            builtin = self._get_scalar(oc, 3, "<i", self._get_scalar(oc, 0, "<b", 0))
-            op_in = self._get_int_vector(op, 1)
-            op_out = self._get_int_vector(op, 2)
-            opt = self._get_table(op, 4)
+            builtin = self._baca_nilai(oc, 3, "<i", self._baca_nilai(oc, 0, "<b", 0))
+            op_in = self._baca_vektor_int(op, 1)
+            op_out = self._baca_vektor_int(op, 2)
+            opt = self._baca_tabel(op, 4)
 
-            if builtin == 6:  # DEQUANTIZE
+            if builtin == 6:
                 self.tensors[op_out[0]] = self.tensors[op_in[0]].astype(np.float32)
-            elif builtin == 3:  # CONV_2D
-                pad = self._get_scalar(opt, 0, "<b", 0)
-                sw = self._get_scalar(opt, 1, "<i", 1)
-                sh = self._get_scalar(opt, 2, "<i", 1)
-                act = self._get_scalar(opt, 3, "<b", 0)
+            elif builtin == 3:
+                pad = self._baca_nilai(opt, 0, "<b", 0)
+                sw = self._baca_nilai(opt, 1, "<i", 1)
+                sh = self._baca_nilai(opt, 2, "<i", 1)
+                act = self._baca_nilai(opt, 3, "<b", 0)
                 w = self.tensors[op_in[1]]
                 b = self.tensors[op_in[2]]
                 if w.shape[1] == 1 and w.shape[2] == 1 and sw == 1 and sh == 1:
                     w_mat = np.ascontiguousarray(w[:, 0, 0, :].T, dtype=np.float32)
-                    self.exec_ops.append(("PW_CONV", op_in[0], op_out[0], w_mat, b, act))
+                    self.daftar_operasi.append(("PW_CONV", op_in[0], op_out[0], w_mat, b, act))
                 else:
-                    self.exec_ops.append(("CONV_2D", op_in[0], op_out[0], w, b, pad, sw, sh, act))
-            elif builtin == 4:  # DEPTHWISE_CONV_2D
-                pad = self._get_scalar(opt, 0, "<b", 0)
-                sw = self._get_scalar(opt, 1, "<i", 1)
-                sh = self._get_scalar(opt, 2, "<i", 1)
-                act = self._get_scalar(opt, 4, "<b", 0)
+                    self.daftar_operasi.append(("CONV_2D", op_in[0], op_out[0], w, b, pad, sw, sh, act))
+            elif builtin == 4:
+                pad = self._baca_nilai(opt, 0, "<b", 0)
+                sw = self._baca_nilai(opt, 1, "<i", 1)
+                sh = self._baca_nilai(opt, 2, "<i", 1)
+                act = self._baca_nilai(opt, 4, "<b", 0)
                 w = self.tensors[op_in[1]][0]
                 b = self.tensors[op_in[2]]
-                self.exec_ops.append(("DW_CONV", op_in[0], op_out[0], w, b, pad, sw, sh, act))
-            elif builtin == 0:  # ADD
-                act = self._get_scalar(opt, 0, "<b", 0)
-                self.exec_ops.append(("ADD", op_in[0], op_in[1], op_out[0], act))
-            elif builtin == 40:  # MEAN
+                self.daftar_operasi.append(("DW_CONV", op_in[0], op_out[0], w, b, pad, sw, sh, act))
+            elif builtin == 0:
+                act = self._baca_nilai(opt, 0, "<b", 0)
+                self.daftar_operasi.append(("ADD", op_in[0], op_in[1], op_out[0], act))
+            elif builtin == 40:
                 axes = tuple(int(a) for a in self.tensors[op_in[1]].flatten())
-                self.exec_ops.append(("MEAN", op_in[0], op_out[0], axes))
-            elif builtin == 9:  # FULLY_CONNECTED
-                act = self._get_scalar(opt, 0, "<b", 0) if opt else 0
+                self.daftar_operasi.append(("MEAN", op_in[0], op_out[0], axes))
+            elif builtin == 9:
+                act = self._baca_nilai(opt, 0, "<b", 0) if opt else 0
                 w_mat = np.ascontiguousarray(self.tensors[op_in[1]].T, dtype=np.float32)
                 b = self.tensors[op_in[2]]
-                self.exec_ops.append(("FC", op_in[0], op_out[0], w_mat, b, act))
-            elif builtin == 25:  # SOFTMAX
-                self.exec_ops.append(("SOFTMAX", op_in[0], op_out[0]))
+                self.daftar_operasi.append(("FC", op_in[0], op_out[0], w_mat, b, act))
+            elif builtin == 25:
+                self.daftar_operasi.append(("SOFTMAX", op_in[0], op_out[0]))
 
     @staticmethod
-    def _apply_act(x, act):
-        if act == 1:  # RELU
+    def _fungsi_aktivasi(x, act):
+        if act == 1:
             np.maximum(x, 0.0, out=x)
-        elif act == 3:  # RELU6
+        elif act == 3:
             np.clip(x, 0.0, 6.0, out=x)
         return x
 
     @staticmethod
-    def _pad_same(x, kh, kw, sh, sw):
+    def _tambah_padding(x, kh, kw, sh, sw):
         _, h, w, _ = x.shape
         out_h = (h + sh - 1) // sh
         out_w = (w + sw - 1) // sw
@@ -269,24 +344,24 @@ class NativeTFLiteRunner:
             x = np.pad(x, ((0, 0), (pt, pb), (pl, pr), (0, 0)), mode="constant")
         return x, out_h, out_w
 
-    def predict(self, input_tensor: np.ndarray) -> np.ndarray:
+    def prediksi(self, input_tensor: np.ndarray) -> np.ndarray:
         t = list(self.tensors)
         t[self.inputs[0]] = np.ascontiguousarray(input_tensor, dtype=np.float32)
 
-        for op in self.exec_ops:
-            kind = op[0]
-            if kind == "PW_CONV":
+        for op in self.daftar_operasi:
+            jenis = op[0]
+            if jenis == "PW_CONV":
                 _, in_idx, out_idx, w_mat, b, act = op
                 x = t[in_idx]
                 n, h, w_dim, c_in = x.shape
                 y = (x.reshape(-1, c_in) @ w_mat).reshape(n, h, w_dim, -1) + b
-                t[out_idx] = self._apply_act(y, act)
-            elif kind == "CONV_2D":
+                t[out_idx] = self._fungsi_aktivasi(y, act)
+            elif jenis == "CONV_2D":
                 _, in_idx, out_idx, w, b, pad, sw, sh, act = op
                 x = t[in_idx]
                 out_c, kh, kw, _ = w.shape
                 if pad == 0:
-                    x, out_h, out_w = self._pad_same(x, kh, kw, sh, sw)
+                    x, out_h, out_w = self._tambah_padding(x, kh, kw, sh, sw)
                 else:
                     out_h = (x.shape[1] - kh) // sh + 1
                     out_w = (x.shape[2] - kw) // sw + 1
@@ -295,13 +370,13 @@ class NativeTFLiteRunner:
                     for kx in range(kw):
                         patch = x[:, ky : ky + out_h * sh : sh, kx : kx + out_w * sw : sw, :]
                         y += patch @ w[:, ky, kx, :].T
-                t[out_idx] = self._apply_act(y, act)
-            elif kind == "DW_CONV":
+                t[out_idx] = self._fungsi_aktivasi(y, act)
+            elif jenis == "DW_CONV":
                 _, in_idx, out_idx, w, b, pad, sw, sh, act = op
                 x = t[in_idx]
                 kh, kw, c = w.shape
                 if pad == 0:
-                    x, out_h, out_w = self._pad_same(x, kh, kw, sh, sw)
+                    x, out_h, out_w = self._tambah_padding(x, kh, kw, sh, sw)
                 else:
                     out_h = (x.shape[1] - kh) // sh + 1
                     out_w = (x.shape[2] - kw) // sw + 1
@@ -310,19 +385,17 @@ class NativeTFLiteRunner:
                     for kx in range(kw):
                         patch = x[:, ky : ky + out_h * sh : sh, kx : kx + out_w * sw : sw, :]
                         y += patch * w[ky, kx, :]
-                t[out_idx] = self._apply_act(y, act)
-            elif kind == "ADD":
+                t[out_idx] = self._fungsi_aktivasi(y, act)
+            elif jenis == "ADD":
                 _, in1, in2, out_idx, act = op
-                y = t[in1] + t[in2]
-                t[out_idx] = self._apply_act(y, act)
-            elif kind == "MEAN":
+                t[out_idx] = self._fungsi_aktivasi(t[in1] + t[in2], act)
+            elif jenis == "MEAN":
                 _, in_idx, out_idx, axes = op
                 t[out_idx] = np.mean(t[in_idx], axis=axes)
-            elif kind == "FC":
+            elif jenis == "FC":
                 _, in_idx, out_idx, w_mat, b, act = op
-                y = t[in_idx] @ w_mat + b
-                t[out_idx] = self._apply_act(y, act)
-            elif kind == "SOFTMAX":
+                t[out_idx] = self._fungsi_aktivasi(t[in_idx] @ w_mat + b, act)
+            elif jenis == "SOFTMAX":
                 _, in_idx, out_idx = op
                 x = t[in_idx]
                 e = np.exp(x - np.max(x, axis=-1, keepdims=True))
@@ -331,593 +404,402 @@ class NativeTFLiteRunner:
         return t[self.outputs[0]][0]
 
 
-# ==================== BASIS PENGETAHUAN 5 RAS KUCING (SESUAI TUBES_PCD.IPYNB) ====================
-BREED_KNOWLEDGE_BASE = {
-    "Bengal": {
-        "nama_lengkap": "Kucing Bengal (Bengal Cat)",
-        "nama_populer": "Bengal / Macan Tutul Mini",
-        "jumlah_data_notebook": 2477,
-        "ikon": "🐆",
-        "ciri_fisik": (
-            "Tubuh atletis, berotot, dan ramping dengan corak bulu tutul (spotted/rosetted) atau marmer (marbled) "
-            "yang eksotis menyerupai macan tutul. Bulu pendek, sangat rapat, dan berkilau (glitter coat)."
-        ),
-        "karakter": "Sangat energik, cerdas, suka memanjat tempat tinggi, penasaran, dan sering menyukai air.",
-        "perawatan": (
-            "Sediakan ruang bermain vertikal (cat tree/cat wheel), ajak bermain aktif setiap hari, "
-            "dan sikat bulu 1 kali seminggu untuk menjaga kilau alami."
-        ),
-        "estimasi_harga": "Rp 3.500.000 – Rp 15.000.000+",
-        "kesehatan": "Perhatikan skrining Hypertrophic Cardiomyopathy (HCM) dan Progressive Retinal Atrophy (PRA-b).",
-    },
-    "British Shorthair": {
-        "nama_lengkap": "Kucing British Shorthair (BSH)",
-        "nama_populer": "British Shorthair",
-        "jumlah_data_notebook": 567,
-        "ikon": "🐻",
-        "ciri_fisik": (
-            "Postur tubuh bulat dan kekar (cobby), dada bidang, pipi tembem (chubby cheeks), mata bulat besar "
-            "(sering berwarna tembaga/emas), serta bulu pendek yang sangat padat dan empuk seperti boneka plush."
-        ),
-        "karakter": "Tenang, santai, mandiri, penyayang namun tidak terlalu menuntut digendong terus-menerus.",
-        "perawatan": (
-            "Kontrol porsi makan untuk mencegah obesitas karena sifatnya yang santai, "
-            "serta sisir bulu 2–3 kali seminggu terutama saat musim rontok."
-        ),
-        "estimasi_harga": "Rp 4.000.000 – Rp 18.000.000+",
-        "kesehatan": "Pantau berat badan ideal, pemeriksaan jantung (HCM), dan kesehatan gusi/gigi.",
-    },
-    "Domestic Short Hair": {
-        "nama_lengkap": "Kucing Domestik / Kampung (Domestic Short Hair)",
-        "nama_populer": "Domestic Short Hair (Kucing Domestik / Kampung)",
-        "jumlah_data_notebook": 53027,
-        "ikon": "🐈",
-        "ciri_fisik": (
-            "Postur tubuh proporsional, lincah, dan tangguh dengan bulu pendek rapat. Memiliki variasi warna "
-            "dan pola bulu yang sangat kaya (tabby/belang, oyen/ginger, calico/belang tiga, tuxedo, putih/hitam solid)."
-        ),
-        "karakter": "Adaptif, cerdas, mandiri, memiliki daya tahan tubuh kuat, dan setia pada pemiliknya.",
-        "perawatan": (
-            "Perawatan bulu sangat praktis (cukup disisir seminggu sekali), berikan pakan bergizi seimbang, "
-            "obat cacing/kutu berkala, vaksinasi dasar, dan sterilisasi."
-        ),
-        "estimasi_harga": "Adopsi Kasih / Rp 150.000 – Rp 500.000 (Pengganti Biaya Vaksin & Steril)",
-        "kesehatan": "Daya tahan genetik sangat prima (hybrid vigor); utamakan pencegahan parasit dan vaksin FVRCP.",
-    },
-    "Persian": {
-        "nama_lengkap": "Kucing Persia (Persian Cat)",
-        "nama_populer": "Persian (Kucing Persia)",
-        "jumlah_data_notebook": 4018,
-        "ikon": "👑",
-        "ciri_fisik": (
-            "Wajah bulat dan datar (flat-face/peke-face atau doll-face), hidung pesek, mata bulat besar, "
-            "telinga kecil berjauhan, tubuh pendek gempal dengan bulu sangat panjang dan lebat."
-        ),
-        "karakter": "Sangat kalem, manja, lembut, menyukai lingkungan rumah yang tenang dan sejuk.",
-        "perawatan": (
-            "Wajib disisir setiap hari (10–15 menit) agar bulu tidak menggumpal (matting), bersihkan area air mata "
-            "setiap pagi, dan pelihara di dalam ruangan (indoor) yang sejuk."
-        ),
-        "estimasi_harga": "Rp 2.000.000 – Rp 8.500.000",
-        "kesehatan": "Rentan terhadap Polycystic Kidney Disease (PKD), penyempitan lubang hidung, dan jamur kulit bila lembap.",
-    },
-    "Turkish Angora": {
-        "nama_lengkap": "Kucing Angora Turki (Turkish Angora)",
-        "nama_populer": "Turkish Angora (Kucing Angora)",
-        "jumlah_data_notebook": 750,
-        "ikon": "🦢",
-        "ciri_fisik": (
-            "Tubuh ramping, anggun, dan lentur dengan bulu semi-panjang sehalus sutra (single coat tanpa lapisan bawah tebal). "
-            "Wajah agak meruncing (wedge-shaped), telinga besar tegak, dan ekor mengembang indah."
-        ),
-        "karakter": "Aktif, cerdas, lincah, ekspresif, dan senang berinteraksi dengan anggota keluarga.",
-        "perawatan": (
-            "Sisir bulu 2–3 kali seminggu (tidak mudah kusut karena single coat), sediakan mainan interaktif, "
-            "dan jaga kebersihan telinga serta mata."
-        ),
-        "estimasi_harga": "Rp 1.500.000 – Rp 4.500.000",
-        "kesehatan": "Perhatikan uji pendengaran pada Angora putih bermata biru serta kesehatan jantung (HCM).",
-    },
-}
+# ==================== 4. FUNGSI PEMROSESAN GAMBAR & PREDIKSI ====================
+@st.cache_resource(show_spinner="Memuat model MobileNetV2...")
+def muat_model():
+    folder_aplikasi = os.path.dirname(os.path.abspath(__file__))
+    lokasi_tflite = os.path.join(folder_aplikasi, "model_kucing.tflite")
 
+    if not os.path.exists(lokasi_tflite):
+        return None
 
-# ==================== FUNGSI UTILITAS & PEMUATAN MODEL ====================
-def get_local_ip() -> str:
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
-        return ip
-    except Exception:
-        return "localhost"
-
-
-@st.cache_data
-def load_labels(label_file: str = "labels_kucing.txt") -> list[str]:
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    full_path = os.path.join(base_dir, label_file)
-    if os.path.exists(full_path):
-        with open(full_path, "r", encoding="utf-8") as f:
-            labels = [line.strip() for line in f if line.strip()]
-        if labels:
-            return labels
-    return [
-        "Bengal",
-        "British Shorthair",
-        "Domestic Short Hair",
-        "Persian",
-        "Turkish Angora",
-    ]
-
-
-@st.cache_resource(show_spinner="Memuat model MobileNetV2 (model_kucing.tflite)...")
-def load_inference_engine():
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    tflite_path = os.path.join(base_dir, "model_kucing.tflite")
-
-    if not os.path.exists(tflite_path):
-        return None, "File model_kucing.tflite tidak ditemukan"
-
-    for mod_name in ("tensorflow", "ai_edge_litert.interpreter", "tflite_runtime.interpreter"):
+    # Coba gunakan interpreter bawaan jika tersedia, jika tidak gunakan pembaca TFLite NumPy
+    for nama_modul in ("tensorflow", "ai_edge_litert.interpreter", "tflite_runtime.interpreter"):
         try:
-            if mod_name == "tensorflow":
+            if nama_modul == "tensorflow":
                 import tensorflow as tf
-                interpreter = tf.lite.Interpreter(model_path=tflite_path)
-            elif mod_name == "ai_edge_litert.interpreter":
+                interpreter = tf.lite.Interpreter(model_path=lokasi_tflite)
+            elif nama_modul == "ai_edge_litert.interpreter":
                 from ai_edge_litert.interpreter import Interpreter
-                interpreter = Interpreter(model_path=tflite_path)
+                interpreter = Interpreter(model_path=lokasi_tflite)
             else:
                 from tflite_runtime.interpreter import Interpreter
-                interpreter = Interpreter(model_path=tflite_path)
+                interpreter = Interpreter(model_path=lokasi_tflite)
             interpreter.allocate_tensors()
-            return ("tflite_c", interpreter), f"TFLite Interpreter ({mod_name} - model_kucing.tflite)"
+            return ("interpreter", interpreter)
         except Exception:
             continue
 
-    runner = NativeTFLiteRunner(tflite_path)
-    return ("native_tflite", runner), "Native TFLite Engine (model_kucing.tflite - MobileNetV2 Float16)"
+    return ("numpy", PenjalanModelTFLite(lokasi_tflite))
 
 
-def preprocess_image_for_mobilenetv2(image: Image.Image):
+def siapkan_gambar(gambar: Image.Image):
     """
-    Tahapan Preprocessing sesuai Bagian B pada tubes_pcd.ipynb:
-    1. Koreksi orientasi EXIF (penting untuk foto kamera HP) & konversi ke RGB (3 channel)
-    2. Resize citra ke ukuran (224, 224)
-    3. Normalisasi piksel dengan preprocess_input MobileNetV2: (x / 127.5) - 1.0 -> rentang [-1.0, 1.0]
+    Menyiapkan foto sebelum dimasukkan ke model MobileNetV2:
+    1. Memperbaiki posisi rotasi foto dari kamera HP
+    2. Mengubah warna menjadi RGB dan ukuran menjadi 224 x 224 piksel
+    3. Mengubah skala nilai piksel menjadi -1 sampai 1
     """
-    img_fixed = ImageOps.exif_transpose(image)
-    img_rgb = img_fixed.convert("RGB")
-    img_resized = img_rgb.resize((224, 224))
-    arr_float = np.asarray(img_resized, dtype=np.float32)
-    arr_normalized = (arr_float / 127.5) - 1.0
-    input_tensor = np.expand_dims(arr_normalized, axis=0)
-    return img_rgb, img_resized, arr_normalized, input_tensor
+    gambar_rapi = ImageOps.exif_transpose(gambar)
+    gambar_rgb = gambar_rapi.convert("RGB")
+    gambar_224 = gambar_rgb.resize((224, 224))
+    array_angka = np.asarray(gambar_224, dtype=np.float32)
+    array_normal = (array_angka / 127.5) - 1.0
+    input_model = np.expand_dims(array_normal, axis=0)
+    return gambar_rgb, gambar_224, array_normal, input_model
 
 
-def predict_breed(input_tensor: np.ndarray, labels: list[str]):
-    engine_obj, engine_name = load_inference_engine()
-    t0 = time.perf_counter()
+def prediksi_ras_kucing(input_model: np.ndarray):
+    model_aktif = muat_model()
+    waktu_mulai = time.perf_counter()
 
-    if engine_obj is None:
+    if model_aktif is None:
         raise FileNotFoundError("File model_kucing.tflite tidak ditemukan di folder aplikasi.")
 
-    mode, runner = engine_obj
-    if mode == "tflite_c":
-        in_details = runner.get_input_details()
-        out_details = runner.get_output_details()
-        runner.set_tensor(in_details[0]["index"], input_tensor.astype(in_details[0]["dtype"]))
-        runner.invoke()
-        probs = runner.get_tensor(out_details[0]["index"])[0]
+    mode, objek_model = model_aktif
+    if mode == "interpreter":
+        info_input = objek_model.get_input_details()
+        info_output = objek_model.get_output_details()
+        objek_model.set_tensor(info_input[0]["index"], input_model.astype(info_input[0]["dtype"]))
+        objek_model.invoke()
+        skor_probabilitas = objek_model.get_tensor(info_output[0]["index"])[0]
     else:
-        probs = runner.predict(input_tensor)
+        skor_probabilitas = objek_model.prediksi(input_model)
 
-    elapsed_ms = (time.perf_counter() - t0) * 1000.0
-    result = {labels[i]: float(probs[i]) for i in range(len(labels))}
-    return result, engine_name, elapsed_ms
-
-
-@st.cache_data
-def get_notebook_sample_images() -> dict[str, bytes]:
-    samples = {}
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    nb_path = os.path.join(base_dir, "tubes_pcd.ipynb")
-    if os.path.exists(nb_path):
-        try:
-            import json
-            import base64
-
-            with open(nb_path, "r", encoding="utf-8") as f:
-                nb = json.load(f)
-            b64 = nb["cells"][15]["outputs"][0]["data"]["image/png"]
-            grid = Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGB")
-            w, h = grid.size
-            cw, ch = w / 5.0, h / 2.0
-            crops = {
-                "Contoh 1 - Domestic Short Hair (Tabby)": grid.crop(
-                    (int(2 * cw + 12), int(32), int(3 * cw - 12), int(ch - 8))
-                ),
-                "Contoh 2 - Domestic Short Hair (Grey & White)": grid.crop(
-                    (int(3 * cw + 12), int(32), int(4 * cw - 12), int(ch - 8))
-                ),
-                "Contoh 3 - Persian Cat": grid.crop(
-                    (int(4 * cw + 10), int(ch + 85), int(5 * cw - 10), int(h - 60))
-                ),
-                "Contoh 4 - Domestic Short Hair (Orange)": grid.crop(
-                    (int(1 * cw + 10), int(55), int(2 * cw - 10), int(ch - 55))
-                ),
-            }
-            for k, im in crops.items():
-                bio = io.BytesIO()
-                im.save(bio, format="PNG")
-                samples[k] = bio.getvalue()
-        except Exception:
-            pass
-    return samples
+    durasi_ms = (time.perf_counter() - waktu_mulai) * 1000.0
+    hasil = {DAFTAR_RAS[i]: float(skor_probabilitas[i]) for i in range(len(DAFTAR_RAS))}
+    return hasil, durasi_ms
 
 
-# ==================== PRE-LOAD MODEL ====================
-labels_list = load_labels()
-local_ip = get_local_ip()
-load_inference_engine()
+# Muat model di awal agar aplikasi siap digunakan
+muat_model()
 
-# ==================== SIDEBAR: INFO MODEL & AKSES HP ====================
+
+# ==================== 5. SIDEBAR (INFORMASI SINGKAT) ====================
 with st.sidebar:
-    st.title("🐾 CatScan AI")
-    st.caption("Aplikasi Identifikasi Ras Kucing berbasis MobileNetV2 (`tubes_pcd.ipynb`)")
+    st.title("Identifikasi Ras Kucing", anchor=False)
+    st.caption("Aplikasi Pendeteksi Ras Kucing Menggunakan MobileNetV2")
     st.markdown("---")
-    st.subheader("📊 Spesifikasi Model (`tubes_pcd.ipynb`)")
-    st.metric("Arsitektur CNN", "MobileNetV2")
-    st.metric("Akurasi Testing", "94,20%", "Loss: 0,2385")
-    st.metric("Akurasi Validasi", "94,08%", "Val Loss: 0,2416")
-    st.metric("Input Tensor", "224 × 224 × 3 (RGB)")
-    st.markdown("**5 Kelas Ras Kucing (`labels_kucing.txt`):**")
-    for idx, lbl in enumerate(labels_list):
-        ikon = BREED_KNOWLEDGE_BASE.get(lbl, {}).get("ikon", "🐱")
-        st.markdown(f"`{idx}` — {ikon} **{lbl}**")
+    st.subheader("Informasi Model", anchor=False)
+    st.metric("Model CNN", "MobileNetV2")
+    st.metric("Akurasi Pengujian", "94,20%")
+    st.metric("Akurasi Validasi", "94,08%")
+    st.metric("Ukuran Gambar Input", "224 × 224 (RGB)")
+    st.markdown("**Daftar 5 Ras Kucing:**")
+    for indeks, nama_ras in enumerate(DAFTAR_RAS):
+        st.markdown(f"`{indeks}` — **{nama_ras}**")
 
 
-# ==================== HEADER UTAMA ====================
+# ==================== 6. JUDUL & MENU TAB UTAMA ====================
 st.markdown(
     """
-    <div class="hero-card">
-        <h1>🐱 Identifikasi Ras Kucing AI (Desktop & HP)</h1>
-        <p>
-            <b>Langkah Mudah:</b> 1) Pilih File Foto (<i>Select File</i>) dari Galeri HP/Komputer atau Scan Kamera
-            ➔ 2) Pastikan Nama File Foto Muncul ➔ 3) Klik <b>Upload & Identifikasi Ras Kucing</b>.
-        </p>
+    <div class="judul-utama">
+        <h1>Identifikasi Ras Kucing</h1>
     </div>
     """,
     unsafe_allow_html=True,
 )
 
-# ==================== NAVIGASI UTAMA ====================
-main_tab_scan, main_tab_katalog, main_tab_model = st.tabs(
+tab_scan, tab_ensiklopedia, tab_ringkasan = st.tabs(
     [
-        "📸 Scan & Identifikasi Kucing",
-        "📘 Ensiklopedia 5 Ras Kucing",
-        "📊 Ringkasan Model (tubes_pcd.ipynb)",
+        "Scan & Identifikasi Kucing",
+        "Ensiklopedia 5 Ras Kucing",
+        "Ringkasan Model",
     ]
 )
 
+
 # ==================== TAB 1: SCAN & IDENTIFIKASI ====================
-with main_tab_scan:
-    col_left, col_right = st.columns([1.05, 1.25], gap="large")
+with tab_scan:
+    kolom_kiri, kolom_kanan = st.columns([1.05, 1.25], gap="large")
 
-    selected_image = None
-    selected_filename = ""
-    selected_filesize_kb = 0.0
-    upload_error_msg = None
+    gambar_terpilih = None
+    nama_file_gambar = ""
+    ukuran_file_kb = 0.0
+    pesan_error = None
 
-    with col_left:
-        st.subheader("1️⃣ Pilih & Upload Foto Kucing")
+    with kolom_kiri:
+        st.subheader("1. Pilih & Upload Foto Kucing", anchor=False)
 
-        # Gunakan radio horizontal (bukan nested tabs) agar file_uploader di HP tidak ter-reset saat pindah dari Galeri HP
-        input_method = st.radio(
+        cara_input = st.radio(
             "Pilih Cara Memasukkan Foto:",
             options=[
-                "📤 Pilih File / Galeri HP",
-                "📷 Scan Kamera Langsung",
-                "🐱 Coba Contoh Foto",
+                "Pilih File / Galeri HP",
+                "Kamera Langsung",
             ],
             horizontal=True,
         )
 
-        if input_method == "📤 Pilih File / Galeri HP":
+        if cara_input == "Pilih File / Galeri HP":
             st.caption(
-                "Tekan **Browse files** untuk memilih foto kucing dari Galeri HP atau komputer Anda."
+                "Tekan tombol **Browse files** untuk memilih foto kucing dari Galeri HP atau komputer."
             )
-            # TANPA filter type=[...] yang ketat agar Android Photo Picker / Galeri HP (content:// URI) tidak pernah ditolak
-            uploaded_file = st.file_uploader(
-                "Select File Foto Kucing (JPG / PNG / WEBP / HEIC):",
+            file_diunggah = st.file_uploader(
+                "Pilih Foto Kucing (JPG / PNG / WEBP / HEIC):",
                 accept_multiple_files=False,
-                key="uploader_kucing_main",
+                key="upload_foto_kucing",
             )
 
-            if uploaded_file is not None:
+            if file_diunggah is not None:
                 try:
-                    raw_bytes = uploaded_file.getvalue()
-                    selected_filename = uploaded_file.name
-                    selected_filesize_kb = len(raw_bytes) / 1024.0
-                    selected_image = Image.open(io.BytesIO(raw_bytes))
-                    selected_image.load()
+                    data_bytes = file_diunggah.getvalue()
+                    nama_file_gambar = file_diunggah.name
+                    ukuran_file_kb = len(data_bytes) / 1024.0
+                    gambar_terpilih = Image.open(io.BytesIO(data_bytes))
+                    gambar_terpilih.load()
                 except Exception as e:
-                    upload_error_msg = (
-                        f"File '{uploaded_file.name}' bukan format gambar yang didukung ({e}). "
-                        "Silakan pilih file foto (JPG, JPEG, PNG, WEBP, atau HEIC)."
+                    pesan_error = (
+                        f"File '{file_diunggah.name}' tidak dapat dibaca sebagai gambar ({e}). "
+                        "Silakan pilih file foto yang benar."
                     )
 
-        elif input_method == "📷 Scan Kamera Langsung":
-            st.caption(
-                "Arahkan kamera HP atau webcam laptop ke kucing Anda lalu tekan tombol **Take Photo**."
-            )
-            camera_photo = st.camera_input("Ambil Foto Kucing", key="cam_kucing_main")
-            if camera_photo is not None:
-                try:
-                    raw_bytes = camera_photo.getvalue()
-                    selected_filename = "hasil_scan_kamera.jpg"
-                    selected_filesize_kb = len(raw_bytes) / 1024.0
-                    selected_image = Image.open(io.BytesIO(raw_bytes))
-                    selected_image.load()
-                except Exception as e:
-                    upload_error_msg = f"Gagal membaca foto kamera: {e}"
-
         else:
-            st.caption("Pilih contoh foto kucing dari dataset `tubes_pcd.ipynb`:")
-            sample_dict = get_notebook_sample_images()
-            if sample_dict:
-                sample_name = st.selectbox(
-                    "Pilih Contoh Foto:",
-                    options=list(sample_dict.keys()),
-                )
-                raw_bytes = sample_dict[sample_name]
-                selected_filename = f"{sample_name}.png"
-                selected_filesize_kb = len(raw_bytes) / 1024.0
-                selected_image = Image.open(io.BytesIO(raw_bytes))
-                selected_image.load()
+            st.caption(
+                "Arahkan kamera ke kucing Anda lalu tekan tombol **Take Photo**."
+            )
+            foto_kamera = st.camera_input("Ambil Foto Kucing", key="kamera_kucing")
+            if foto_kamera is not None:
+                try:
+                    data_bytes = foto_kamera.getvalue()
+                    nama_file_gambar = "foto_kamera.jpg"
+                    ukuran_file_kb = len(data_bytes) / 1024.0
+                    gambar_terpilih = Image.open(io.BytesIO(data_bytes))
+                    gambar_terpilih.load()
+                except Exception as e:
+                    pesan_error = f"Gagal membaca foto dari kamera: {e}"
 
-        if upload_error_msg:
-            st.error(upload_error_msg)
+        if pesan_error:
+            st.error(pesan_error)
 
-        # Tampilkan Nama File Image yang Dipilih + Tombol Upload & Deteksi
-        if selected_image is not None:
-            img_w, img_h = selected_image.size
-            file_id = f"{selected_filename}_{ len(raw_bytes) }"
-            is_already_uploaded = st.session_state.get("uploaded_file_id") == file_id
+        # Jika file sudah dipilih, tampilkan nama file dan tombol Upload & Identifikasi
+        if gambar_terpilih is not None:
+            lebar_img, tinggi_img = gambar_terpilih.size
+            id_file = f"{nama_file_gambar}_{len(data_bytes)}"
+            sudah_diproses = st.session_state.get("id_file_terproses") == id_file
 
             st.markdown(
                 f"""
-                <div class="file-selected-card">
-                    <div style="font-size:0.8rem; font-weight:700; text-transform:uppercase; color:#1d4ed8;">
-                        ✅ LANGKAH 1 SELESAI — FILE GAMBAR TERPILIH
+                <div class="kotak-file-terpilih">
+                    <div style="font-size:0.8rem; font-weight:700; color:#1d4ed8;">
+                        LANGKAH 1 SELESAI — FILE GAMBAR TERPILIH
                     </div>
-                    <div style="font-size:1.08rem; font-weight:800; margin-top:0.25rem; word-break:break-all;">
-                        🖼️ Nama Image: {selected_filename}
+                    <div style="font-size:1.05rem; font-weight:800; margin-top:0.25rem; word-break:break-all;">
+                        Nama Image: {nama_file_gambar}
                     </div>
                     <div style="font-size:0.85rem; margin-top:0.15rem; color:#334155;">
-                        Ukuran File: <b>{selected_filesize_kb:.1f} KB</b> • Resolusi: <b>{img_w} × {img_h} px</b>
+                        Ukuran: <b>{ukuran_file_kb:.1f} KB</b> • Resolusi: <b>{lebar_img} × {tinggi_img} px</b>
                     </div>
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
 
-            # Langkah 2: Tombol Upload & Identifikasi setelah file dipilih
-            if st.button("📤 Upload & Identifikasi Foto Ini Sekarang", type="primary"):
-                st.session_state["uploaded_file_id"] = file_id
-                is_already_uploaded = True
-                st.toast(f"✅ Mengunggah & memproses {selected_filename}...")
+            if st.button("Upload & Identifikasi Foto Ini Sekarang", type="primary"):
+                st.session_state["id_file_terproses"] = id_file
+                sudah_diproses = True
 
-            # Tampilkan pratinjau ukuran kompak agar di HP tidak memenuhi layar
             st.image(
-                ImageOps.exif_transpose(selected_image).convert("RGB"),
-                caption=f"Nama Image: {selected_filename} ({img_w}×{img_h} px)",
+                ImageOps.exif_transpose(gambar_terpilih).convert("RGB"),
+                caption=f"Nama Image: {nama_file_gambar} ({lebar_img}×{tinggi_img} px)",
                 width=280,
             )
         else:
-            is_already_uploaded = False
+            sudah_diproses = False
 
-    # Jalankan Deteksi setelah user menekan tombol Upload & Identifikasi
-    with col_right:
-        st.subheader("2️⃣ Hasil Identifikasi Ras Kucing")
+    with kolom_kanan:
+        st.subheader("2. Hasil Identifikasi Ras Kucing", anchor=False)
 
-        if selected_image is None:
+        if gambar_terpilih is None:
             st.info(
-                "👈 **Langkah 1 (Select File):** Klik tombol **Browse files** untuk memilih foto kucing dari Galeri HP / File Manager.\n\n"
-                "**Langkah 2 (Cek Nama Image):** Pastikan **nama image** muncul di layar.\n\n"
-                "**Langkah 3 (Upload):** Klik tombol **📤 Upload & Identifikasi Foto Ini Sekarang**."
+                "**Langkah 1 (Select File):** Klik tombol **Browse files** untuk memilih foto kucing.\n\n"
+                "**Langkah 2 (Cek Nama Image):** Pastikan nama gambar muncul di layar.\n\n"
+                "**Langkah 3 (Upload):** Klik tombol **Upload & Identifikasi Foto Ini Sekarang**."
             )
             with st.container(border=True):
-                st.markdown("#### 🐾 5 Ras Kucing yang Dapat Diidentifikasi")
+                st.markdown("**5 Ras Kucing yang Dapat Dikenali:**")
                 st.markdown(
-                    "- 🐆 **Bengal** (`Bengal Cat`)\n"
-                    "- 🐻 **British Shorthair** (`BSH`)\n"
-                    "- 🐈 **Domestic Short Hair** (`Kucing Domestik / Kampung`)\n"
-                    "- 👑 **Persian** (`Kucing Persia`)\n"
-                    "- 🦢 **Turkish Angora** (`Kucing Angora`)"
+                    "- **Bengal**\n"
+                    "- **British Shorthair**\n"
+                    "- **Domestic Short Hair** (Kucing Domestik / Kampung)\n"
+                    "- **Persian** (Kucing Persia)\n"
+                    "- **Turkish Angora** (Kucing Angora)"
                 )
-        elif not is_already_uploaded:
-            st.warning(
-                f"📄 File **`{selected_filename}`** sudah dipilih!\n\n"
-                "Silakan tekan tombol biru **📤 Upload & Identifikasi Foto Ini Sekarang** di bawah nama file untuk mulai mendeteksi ras kucing."
-            )
-        else:
-            with st.spinner(f"🔍 Sedang mendeteksi '{selected_filename}' dengan MobileNetV2..."):
-                img_rgb, img_resized, arr_norm, input_tensor = preprocess_image_for_mobilenetv2(
-                    selected_image
-                )
-                probs_dict, engine_label, infer_ms = predict_breed(input_tensor, labels_list)
-                sorted_preds = sorted(probs_dict.items(), key=lambda x: x[1], reverse=True)
-                top_breed, top_prob = sorted_preds[0]
-                top_pct = top_prob * 100.0
-                breed_info = BREED_KNOWLEDGE_BASE.get(top_breed, {})
 
-            ikon = breed_info.get("ikon", "🐱")
-            nama_lengkap = breed_info.get("nama_lengkap", top_breed)
+        elif not sudah_diproses:
+            st.warning(
+                f"File **`{nama_file_gambar}`** sudah dipilih.\n\n"
+                "Silakan klik tombol **Upload & Identifikasi Foto Ini Sekarang** untuk melihat hasil deteksi ras kucing."
+            )
+
+        else:
+            with st.spinner(f"Sedang mengenali foto '{nama_file_gambar}'..."):
+                gambar_rgb, gambar_224, array_normal, input_model = siapkan_gambar(gambar_terpilih)
+                hasil_prediksi, waktu_ms = prediksi_ras_kucing(input_model)
+                urutan_prediksi = sorted(hasil_prediksi.items(), key=lambda x: x[1], reverse=True)
+                ras_teratas, skor_teratas = urutan_prediksi[0]
+                persen_teratas = skor_teratas * 100.0
+                detail_ras = INFO_RAS_KUCING.get(ras_teratas, {})
+
+            nama_tampil = detail_ras.get("nama_lengkap", ras_teratas)
 
             st.markdown(
                 f"""
-                <div class="pred-badge">
+                <div class="kotak-hasil">
                     <div style="font-size:0.84rem; opacity:0.92; margin-bottom:0.2rem;">
-                        📄 File: <b>{selected_filename}</b>
+                        Nama File: <b>{nama_file_gambar}</b>
                     </div>
-                    <h2>{ikon} {nama_lengkap}</h2>
-                    <div class="conf-pill">🎯 Tingkat Keyakinan (Confidence): {top_pct:.2f}%</div>
+                    <h2>{nama_tampil}</h2>
+                    <div class="label-akurasi">Tingkat Keyakinan: {persen_teratas:.2f}%</div>
                     <div style="font-size:0.8rem; opacity:0.85; margin-top:0.45rem;">
-                        Engine: {engine_label} • Waktu Inferensi: {infer_ms:.0f} ms
+                        Waktu Proses: {waktu_ms:.0f} ms
                     </div>
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
 
-            if top_pct < 55.0:
+            if persen_teratas < 55.0:
                 st.warning(
-                    "⚠️ Tingkat keyakinan di bawah 55%. Pastikan objek kucing terlihat jelas, dekat, dan memiliki pencahayaan yang baik."
+                    "Tingkat keyakinan di bawah 55%. Pastikan foto kucing terlihat jelas dan memiliki pencahayaan yang cukup."
                 )
 
-            st.markdown("##### 📊 Persentase Probabilitas 5 Kelas (`Softmax Output`)")
-            for breed_name, prob_val in sorted_preds:
-                pct = prob_val * 100.0
-                b_icon = BREED_KNOWLEDGE_BASE.get(breed_name, {}).get("ikon", "🐱")
+            st.markdown("**Persentase Kecocokan untuk 5 Ras Kucing:**")
+            for nama_ras, nilai_skor in urutan_prediksi:
+                persen = nilai_skor * 100.0
                 st.progress(
-                    min(max(int(round(pct)), 1), 100),
-                    text=f"{b_icon} **{breed_name}**: **{pct:.2f}%**",
+                    min(max(int(round(persen)), 1), 100),
+                    text=f"**{nama_ras}**: **{persen:.2f}%**",
                 )
 
-            if breed_info:
+            if detail_ras:
                 with st.container(border=True):
-                    st.markdown(
-                        f"#### {ikon} Profil & Panduan Perawatan: **{breed_info['nama_populer']}**"
-                    )
-                    st.markdown(f"**🔎 Ciri Fisik Utama:**\n{breed_info['ciri_fisik']}")
-                    c_info1, c_info2 = st.columns(2)
-                    with c_info1:
-                        st.markdown(f"**💛 Karakter & Sifat:**\n{breed_info['karakter']}")
-                        st.markdown(
-                            f"**💰 Estimasi Harga / Adopsi:**\n`{breed_info['estimasi_harga']}`"
-                        )
-                    with c_info2:
-                        st.markdown(f"**🧼 Panduan Perawatan:**\n{breed_info['perawatan']}")
-                        st.markdown(f"**🩺 Catatan Kesehatan:**\n{breed_info['kesehatan']}")
+                    st.markdown(f"**Informasi & Cara Perawatan: {detail_ras['nama_lengkap']}**")
+                    st.markdown(f"**Ciri Fisik:**\n{detail_ras['ciri_fisik']}")
+                    kol_info1, kol_info2 = st.columns(2)
+                    with kol_info1:
+                        st.markdown(f"**Karakter:**\n{detail_ras['karakter']}")
+                    with kol_info2:
+                        st.markdown(f"**Perawatan:**\n{detail_ras['perawatan']}")
+                    st.markdown(f"**Catatan Kesehatan:**\n{detail_ras['kesehatan']}")
 
-            with st.expander("🔍 Lihat Detail Tahapan Preprocessing (224 × 224 RGB)"):
+            with st.expander("Lihat Detail Ukuran Gambar (224 × 224 RGB)"):
                 p1, p2 = st.columns(2)
                 with p1:
                     st.image(
-                        img_resized,
-                        caption="Hasil Resize: 224 × 224 px (RGB)",
+                        gambar_224,
+                        caption="Gambar Setelah Diubah ke 224 × 224 px",
                         width="stretch",
                     )
                 with p2:
-                    st.markdown("**Parameter Tensor Input:**")
+                    st.markdown("**Informasi Gambar Input:**")
                     st.code(
-                        f"Nama File     : {selected_filename}\n"
-                        f"Resolusi Asli : {img_rgb.size[0]} × {img_rgb.size[1]} px\n"
-                        f"Mode Warna    : {img_rgb.mode} (3 Channel)\n"
-                        f"Ukuran Resize : 224 × 224 px\n"
-                        f"Bentuk Tensor : {input_tensor.shape}\n"
-                        f"Nilai Minimum : {arr_norm.min():.3f}\n"
-                        f"Nilai Maksimum: {arr_norm.max():.3f}\n"
-                        f"Normalisasi   : MobileNetV2 [-1, 1]"
+                        f"Nama File     : {nama_file_gambar}\n"
+                        f"Ukuran Asli   : {gambar_rgb.size[0]} × {gambar_rgb.size[1]} px\n"
+                        f"Mode Warna    : {gambar_rgb.mode}\n"
+                        f"Ukuran Model  : 224 × 224 px\n"
+                        f"Bentuk Data   : {input_model.shape}\n"
+                        f"Nilai Minimum : {array_normal.min():.2f}\n"
+                        f"Nilai Maksimum: {array_normal.max():.2f}"
                     )
 
 
 # ==================== TAB 2: ENSIKLOPEDIA 5 RAS KUCING ====================
-with main_tab_katalog:
-    st.subheader("📘 Informasi Lengkap 5 Kelas Ras Kucing")
-    st.caption(
-        "Daftar 5 ras kucing yang diklasifikasikan oleh model sesuai `labels_kucing.txt` pada `tubes_pcd.ipynb`."
-    )
-    cols_kat = st.columns(2)
-    for idx, breed_key in enumerate(labels_list):
-        info = BREED_KNOWLEDGE_BASE.get(breed_key, {})
-        with cols_kat[idx % 2]:
+with tab_ensiklopedia:
+    st.subheader("Informasi Lengkap 5 Ras Kucing", anchor=False)
+    kolom_katalog = st.columns(2)
+
+    for indeks, nama_ras in enumerate(DAFTAR_RAS):
+        info = INFO_RAS_KUCING.get(nama_ras, {})
+        with kolom_katalog[indeks % 2]:
             with st.container(border=True):
-                st.markdown(f"### {info.get('ikon', '🐱')} {info.get('nama_lengkap', breed_key)}")
+                # Menggunakan div biasa (bukan heading ###) agar tidak muncul ikon link di sebelah nama ras
+                st.markdown(
+                    f'<div class="judul-ras-katalog">{info.get("nama_lengkap", nama_ras)}</div>',
+                    unsafe_allow_html=True,
+                )
                 st.caption(
-                    f"Indeks Kelas: `{idx}` • Jumlah Citra pada Dataset Terpilih: `{info.get('jumlah_data_notebook', 0):,} citra`"
+                    f"Nomor Kelas: {indeks} • Jumlah Data Latih: {info.get('jumlah_data', 0):,} foto"
                 )
                 st.markdown(f"- **Ciri Fisik:** {info.get('ciri_fisik', '-')}")
                 st.markdown(f"- **Karakter:** {info.get('karakter', '-')}")
                 st.markdown(f"- **Perawatan:** {info.get('perawatan', '-')}")
-                st.markdown(f"- **Catatan Medis:** {info.get('kesehatan', '-')}")
+                st.markdown(f"- **Kesehatan:** {info.get('kesehatan', '-')}")
 
 
-# ==================== TAB 3: RINGKASAN MODEL (TUBES_PCD.IPYNB) ====================
-with main_tab_model:
-    st.subheader("📊 Dokumentasi & Evaluasi Model (`tubes_pcd.ipynb`)")
+# ==================== TAB 3: RINGKASAN MODEL ====================
+with tab_ringkasan:
+    st.subheader("Ringkasan & Evaluasi Model", anchor=False)
     st.markdown(
-        "Ringkasan tahapan pemilihan data, *preprocessing*, arsitektur **MobileNetV2**, dan evaluasi dari notebook [`tubes_pcd.ipynb`]."
+        "Ringkasan jumlah data, pembagian data, susunan jaringan **MobileNetV2**, dan hasil akurasi pelatihan."
     )
 
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Total Citra Awal (67 Kelas)", "126.607")
-    m2.metric("Total Citra Terpilih (5 Kelas)", "60.839")
-    m3.metric("Akurasi Validasi (Epoch 10)", "94,08%")
-    m4.metric("Akurasi Testing (6.084 Citra)", "94,20%")
+    m1.metric("Total Data Awal (67 Kelas)", "126.607")
+    m2.metric("Data Terpilih (5 Kelas)", "60.839")
+    m3.metric("Akurasi Validasi", "94,08%")
+    m4.metric("Akurasi Pengujian", "94,20%")
 
-    col_d1, col_d2 = st.columns(2)
-    with col_d1:
-        st.markdown("##### 1. Distribusi Citra pada 5 Kelas Terpilih")
-        df_dist = pd.DataFrame(
+    kol_tabel1, kol_tabel2 = st.columns(2)
+    with kol_tabel1:
+        st.markdown("**1. Jumlah Foto pada 5 Ras Kucing**")
+        tabel_distribusi = pd.DataFrame(
             {
-                "Indeks Label": [0, 1, 2, 3, 4],
-                "Nama Kelas (labels_kucing.txt)": [
+                "Nomor Kelas": [0, 1, 2, 3, 4],
+                "Nama Ras Kucing": [
                     "Bengal",
                     "British Shorthair",
                     "Domestic Short Hair",
                     "Persian",
                     "Turkish Angora",
                 ],
-                "Jumlah Citra Valid": [2477, 567, 53027, 4018, 750],
+                "Jumlah Foto": [2477, 567, 53027, 4018, 750],
             }
         )
-        st.dataframe(df_dist, width="stretch", hide_index=True)
+        st.dataframe(tabel_distribusi, width="stretch", hide_index=True)
 
-        st.markdown("##### 2. Pembagian Dataset (`Stratified Split 80 : 10 : 10`)")
-        df_split = pd.DataFrame(
+        st.markdown("**2. Pembagian Data (80% Latih, 10% Validasi, 10% Uji)**")
+        tabel_pembagian = pd.DataFrame(
             {
-                "Subset Data": ["Data Training (80%)", "Data Validation (10%)", "Data Testing (10%)"],
-                "Jumlah Citra": ["48.671 citra", "6.084 citra", "6.084 citra"],
+                "Bagian Data": ["Data Latih (80%)", "Data Validasi (10%)", "Data Uji (10%)"],
+                "Jumlah Foto": ["48.671 foto", "6.084 foto", "6.084 foto"],
             }
         )
-        st.dataframe(df_split, width="stretch", hide_index=True)
+        st.dataframe(tabel_pembagian, width="stretch", hide_index=True)
 
-    with col_d2:
-        st.markdown("##### 3. Arsitektur CNN MobileNetV2 (`model_kucing.tflite`)")
-        df_arch = pd.DataFrame(
+    with kol_tabel2:
+        st.markdown("**3. Susunan Lapisan Model MobileNetV2**")
+        tabel_arsitektur = pd.DataFrame(
             {
-                "Layer": [
-                    "Input Layer",
-                    "Data Augmentation",
-                    "MobileNetV2 (ImageNet, frozen)",
+                "Lapisan (Layer)": [
+                    "Input Gambar",
+                    "Augmentasi Data",
+                    "MobileNetV2 (Pre-trained)",
                     "GlobalAveragePooling2D",
-                    "Dense (ReLU, L2=0.001)",
+                    "Dense (128 Neuron, ReLU)",
                     "Dropout (0.4)",
-                    "Dense Output (Softmax)",
+                    "Output (5 Kelas, Softmax)",
                 ],
-                "Output Shape": [
-                    "(None, 224, 224, 3)",
-                    "(None, 224, 224, 3)",
-                    "(None, 7, 7, 1280)",
-                    "(None, 1280)",
-                    "(None, 128)",
-                    "(None, 128)",
-                    "(None, 5)",
+                "Ukuran Output": [
+                    "(224, 224, 3)",
+                    "(224, 224, 3)",
+                    "(7, 7, 1280)",
+                    "(1280)",
+                    "(128)",
+                    "(128)",
+                    "(5)",
                 ],
-                "Parameter": ["0", "0", "2.257.984", "0", "163.968", "0", "645"],
+                "Jumlah Parameter": ["0", "0", "2.257.984", "0", "163.968", "0", "645"],
             }
         )
-        st.dataframe(df_arch, width="stretch", hide_index=True)
+        st.dataframe(tabel_arsitektur, width="stretch", hide_index=True)
 
-        st.markdown("##### 4. Riwayat Pelatihan 10 Epoch (`Adam lr=1e-4`)")
-        df_hist = pd.DataFrame(
+        st.markdown("**4. Hasil Pelatihan Model (10 Epoch)**")
+        tabel_pelatihan = pd.DataFrame(
             {
                 "Epoch": [1, 2, 4, 6, 8, 10],
-                "Train Accuracy": ["91,98%", "93,07%", "93,53%", "93,86%", "94,01%", "94,01%"],
-                "Val Accuracy": ["93,69%", "93,92%", "94,10%", "93,92%", "94,05%", "94,08%"],
-                "Val Loss": ["0,3737", "0,3225", "0,2798", "0,2615", "0,2493", "0,2416"],
+                "Akurasi Latih": ["91,98%", "93,07%", "93,53%", "93,86%", "94,01%", "94,01%"],
+                "Akurasi Validasi": ["93,69%", "93,92%", "94,10%", "93,92%", "94,05%", "94,08%"],
+                "Loss Validasi": ["0,3737", "0,3225", "0,2798", "0,2615", "0,2493", "0,2416"],
             }
         )
-        st.dataframe(df_hist, width="stretch", hide_index=True)
+        st.dataframe(tabel_pelatihan, width="stretch", hide_index=True)
