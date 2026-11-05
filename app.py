@@ -1,3 +1,4 @@
+import io
 import os
 import socket
 import struct
@@ -6,6 +7,12 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 from PIL import Image, ImageOps
+
+try:
+    import pillow_heif
+    pillow_heif.register_heif_opener()
+except Exception:
+    pass
 
 # ==================== KONFIGURASI HALAMAN STREAMLIT ====================
 st.set_page_config(
@@ -19,40 +26,48 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-    /* Kontainer utama responsif untuk Desktop & HP */
     .block-container {
-        padding-top: 1.5rem;
+        padding-top: 1.2rem;
         padding-bottom: 2.5rem;
-        max-width: 1200px;
+        max-width: 1180px;
     }
-    /* Header Banner */
     .hero-card {
         background: linear-gradient(135deg, #1e293b 0%, #334155 100%);
         color: #ffffff;
-        padding: 1.4rem 1.6rem;
+        padding: 1.3rem 1.5rem;
         border-radius: 16px;
-        margin-bottom: 1.2rem;
+        margin-bottom: 1rem;
         box-shadow: 0 4px 15px rgba(0,0,0,0.12);
     }
     .hero-card h1 {
-        font-size: 1.75rem;
-        margin: 0 0 0.4rem 0;
+        font-size: 1.6rem;
+        margin: 0 0 0.35rem 0;
         color: #ffffff !important;
     }
     .hero-card p {
-        font-size: 0.98rem;
+        font-size: 0.94rem;
         margin: 0;
         opacity: 0.92;
         line-height: 1.45;
     }
-    /* Kartu Hasil Prediksi */
+    /* Kotak informasi nama file setelah Select File */
+    .file-selected-card {
+        background: #eff6ff;
+        border: 2px solid #3b82f6;
+        color: #1e3a8a;
+        padding: 0.85rem 1.1rem;
+        border-radius: 12px;
+        margin-top: 0.5rem;
+        margin-bottom: 0.75rem;
+    }
+    /* Kartu Hasil Prediksi Utama */
     .pred-badge {
         background: linear-gradient(135deg, #0f766e 0%, #14b8a6 100%);
         color: white;
         padding: 1.2rem 1.4rem;
         border-radius: 14px;
         margin-bottom: 1rem;
-        box-shadow: 0 4px 12px rgba(20, 184, 166, 0.22);
+        box-shadow: 0 4px 12px rgba(20, 184, 166, 0.25);
     }
     .pred-badge h2 {
         margin: 0;
@@ -68,29 +83,28 @@ st.markdown(
         font-weight: 600;
         font-size: 0.9rem;
     }
-    /* Tombol ramah layar sentuh HP */
-    .stButton > button, .stDownloadButton > button {
+    .stButton > button {
         width: 100%;
         border-radius: 10px;
-        min-height: 2.8rem;
-        font-weight: 600;
+        min-height: 3rem;
+        font-weight: 700;
+        font-size: 1rem;
     }
-    /* Penyesuaian khusus layar HP (Mobile) */
     @media (max-width: 768px) {
         .block-container {
-            padding-top: 0.8rem;
-            padding-left: 0.8rem;
-            padding-right: 0.8rem;
+            padding-top: 0.6rem;
+            padding-left: 0.75rem;
+            padding-right: 0.75rem;
         }
         .hero-card {
-            padding: 1rem 1.1rem;
+            padding: 0.95rem 1.05rem;
             border-radius: 12px;
         }
         .hero-card h1 {
-            font-size: 1.3rem;
+            font-size: 1.25rem;
         }
         .hero-card p {
-            font-size: 0.88rem;
+            font-size: 0.85rem;
         }
         .pred-badge h2 {
             font-size: 1.25rem;
@@ -107,7 +121,7 @@ class NativeTFLiteRunner:
     """
     Mengeksekusi grafik model_kucing.tflite (TFL3 FlatBuffer MobileNetV2 float16/float32)
     secara langsung menggunakan NumPy sehingga tetap berjalan cepat dan akurat
-    meskipun pustaka C++ TensorFlow belum terinstal (misal pada Python 3.13).
+    di Python versi apa pun (termasuk Python 3.12 / 3.13 di Streamlit Community Cloud).
     """
 
     def __init__(self, model_path: str):
@@ -409,7 +423,6 @@ BREED_KNOWLEDGE_BASE = {
 
 # ==================== FUNGSI UTILITAS & PEMUATAN MODEL ====================
 def get_local_ip() -> str:
-    """Mendapatkan alamat IP lokal agar aplikasi bisa dibuka dari HP di jaringan Wi-Fi yang sama."""
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("8.8.8.8", 80))
@@ -422,7 +435,6 @@ def get_local_ip() -> str:
 
 @st.cache_data
 def load_labels(label_file: str = "labels_kucing.txt") -> list[str]:
-    """Memuat daftar kelas dari labels_kucing.txt yang dihasilkan oleh tubes_pcd.ipynb."""
     base_dir = os.path.dirname(os.path.abspath(__file__))
     full_path = os.path.join(base_dir, label_file)
     if os.path.exists(full_path):
@@ -441,19 +453,12 @@ def load_labels(label_file: str = "labels_kucing.txt") -> list[str]:
 
 @st.cache_resource(show_spinner="Memuat model MobileNetV2 (model_kucing.tflite)...")
 def load_inference_engine():
-    """
-    Memuat model_kucing.tflite dari direktori proyek.
-    Prioritas:
-    1. tensorflow.lite.Interpreter / ai_edge_litert / tflite_runtime (jika tersedia)
-    2. NativeTFLiteRunner (menjalankan bobot asli model_kucing.tflite langsung dengan NumPy)
-    """
     base_dir = os.path.dirname(os.path.abspath(__file__))
     tflite_path = os.path.join(base_dir, "model_kucing.tflite")
 
     if not os.path.exists(tflite_path):
         return None, "File model_kucing.tflite tidak ditemukan"
 
-    # Coba runtime C++ TFLite jika tersedia di environment
     for mod_name in ("tensorflow", "ai_edge_litert.interpreter", "tflite_runtime.interpreter"):
         try:
             if mod_name == "tensorflow":
@@ -470,7 +475,6 @@ def load_inference_engine():
         except Exception:
             continue
 
-    # Gunakan NativeTFLiteRunner berbasis NumPy yang membaca bobot asli model_kucing.tflite
     runner = NativeTFLiteRunner(tflite_path)
     return ("native_tflite", runner), "Native TFLite Engine (model_kucing.tflite - MobileNetV2 Float16)"
 
@@ -492,7 +496,6 @@ def preprocess_image_for_mobilenetv2(image: Image.Image):
 
 
 def predict_breed(input_tensor: np.ndarray, labels: list[str]):
-    """Menjalankan prediksi ras kucing menggunakan model_kucing.tflite."""
     engine_obj, engine_name = load_inference_engine()
     t0 = time.perf_counter()
 
@@ -515,8 +518,7 @@ def predict_breed(input_tensor: np.ndarray, labels: list[str]):
 
 
 @st.cache_data
-def get_notebook_sample_images() -> dict[str, Image.Image]:
-    """Mengekstrak contoh citra kucing asli dari output Cell 15 di tubes_pcd.ipynb."""
+def get_notebook_sample_images() -> dict[str, bytes]:
     samples = {}
     base_dir = os.path.dirname(os.path.abspath(__file__))
     nb_path = os.path.join(base_dir, "tubes_pcd.ipynb")
@@ -524,7 +526,6 @@ def get_notebook_sample_images() -> dict[str, Image.Image]:
         try:
             import json
             import base64
-            import io
 
             with open(nb_path, "r", encoding="utf-8") as f:
                 nb = json.load(f)
@@ -532,42 +533,38 @@ def get_notebook_sample_images() -> dict[str, Image.Image]:
             grid = Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGB")
             w, h = grid.size
             cw, ch = w / 5.0, h / 2.0
-            samples["Contoh 1 - Domestic Short Hair (Tabby)"] = grid.crop(
-                (int(2 * cw + 12), int(32), int(3 * cw - 12), int(ch - 8))
-            )
-            samples["Contoh 2 - Domestic Short Hair (Grey & White)"] = grid.crop(
-                (int(3 * cw + 12), int(32), int(4 * cw - 12), int(ch - 8))
-            )
-            samples["Contoh 3 - Persian Cat"] = grid.crop(
-                (int(4 * cw + 10), int(ch + 85), int(5 * cw - 10), int(h - 60))
-            )
-            samples["Contoh 4 - Domestic Short Hair (Orange)"] = grid.crop(
-                (int(1 * cw + 10), int(55), int(2 * cw - 10), int(ch - 55))
-            )
+            crops = {
+                "Contoh 1 - Domestic Short Hair (Tabby)": grid.crop(
+                    (int(2 * cw + 12), int(32), int(3 * cw - 12), int(ch - 8))
+                ),
+                "Contoh 2 - Domestic Short Hair (Grey & White)": grid.crop(
+                    (int(3 * cw + 12), int(32), int(4 * cw - 12), int(ch - 8))
+                ),
+                "Contoh 3 - Persian Cat": grid.crop(
+                    (int(4 * cw + 10), int(ch + 85), int(5 * cw - 10), int(h - 60))
+                ),
+                "Contoh 4 - Domestic Short Hair (Orange)": grid.crop(
+                    (int(1 * cw + 10), int(55), int(2 * cw - 10), int(ch - 55))
+                ),
+            }
+            for k, im in crops.items():
+                bio = io.BytesIO()
+                im.save(bio, format="PNG")
+                samples[k] = bio.getvalue()
         except Exception:
             pass
     return samples
 
 
-# ==================== SIDEBAR: INFO MODEL & AKSES HP ====================
+# ==================== PRE-LOAD MODEL ====================
 labels_list = load_labels()
 local_ip = get_local_ip()
+load_inference_engine()
 
+# ==================== SIDEBAR: INFO MODEL & AKSES HP ====================
 with st.sidebar:
     st.title("🐾 CatScan AI")
     st.caption("Aplikasi Identifikasi Ras Kucing berbasis MobileNetV2 (`tubes_pcd.ipynb`)")
-    st.markdown("---")
-
-    st.subheader("📱 Buka di HP (Satu Wi-Fi)")
-    st.markdown(
-        f"Jika dijalankan di laptop/PC, buka browser di HP Anda yang terhubung ke Wi-Fi yang sama lalu ketik:\n"
-        f"**`http://{local_ip}:8501`**"
-    )
-    st.caption(
-        "Catatan: Kamera browser HP biasanya bekerja langsung pada `localhost` atau koneksi `HTTPS` (misal Streamlit Cloud). "
-        "Di jaringan lokal HTTP, Anda juga bisa memilih tab **Upload / Pilih Foto** lalu pilih **Ambil Foto / Kamera** dari menu file HP."
-    )
-
     st.markdown("---")
     st.subheader("📊 Spesifikasi Model (`tubes_pcd.ipynb`)")
     st.metric("Arsitektur CNN", "MobileNetV2")
@@ -584,10 +581,10 @@ with st.sidebar:
 st.markdown(
     """
     <div class="hero-card">
-        <h1>🐱 Identifikasi Ras Kucing AI (Scan Kamera & Upload Foto)</h1>
+        <h1>🐱 Identifikasi Ras Kucing AI (Desktop & HP)</h1>
         <p>
-            Unggah foto kucing dari galeri atau gunakan <b>Scan Kamera</b> langsung dari <b>HP maupun Desktop</b>.
-            Menggunakan model <b>MobileNetV2 (<code>model_kucing.tflite</code>)</b> hasil pelatihan pada <code>tubes_pcd.ipynb</code>.
+            <b>Langkah Mudah:</b> 1) Pilih File Foto (<i>Select File</i>) dari Galeri HP/Komputer atau Scan Kamera
+            ➔ 2) Pastikan Nama File Foto Muncul ➔ 3) Klik <b>Upload & Identifikasi Ras Kucing</b>.
         </p>
     </div>
     """,
@@ -605,113 +602,165 @@ main_tab_scan, main_tab_katalog, main_tab_model = st.tabs(
 
 # ==================== TAB 1: SCAN & IDENTIFIKASI ====================
 with main_tab_scan:
-    col_left, col_right = st.columns([1.0, 1.25], gap="large")
+    col_left, col_right = st.columns([1.05, 1.25], gap="large")
+
+    selected_image = None
+    selected_filename = ""
+    selected_filesize_kb = 0.0
+    upload_error_msg = None
 
     with col_left:
-        st.subheader("1️⃣ Masukkan Foto Kucing")
-        mode_tab_upload, mode_tab_camera, mode_tab_sample = st.tabs(
-            [
-                "📤 Upload / Galeri HP",
-                "📷 Scan Kamera",
-                "🐱 Contoh Foto",
-            ]
+        st.subheader("1️⃣ Pilih & Upload Foto Kucing")
+
+        # Gunakan radio horizontal (bukan nested tabs) agar file_uploader di HP tidak ter-reset saat pindah dari Galeri HP
+        input_method = st.radio(
+            "Pilih Cara Memasukkan Foto:",
+            options=[
+                "📤 Pilih File / Galeri HP",
+                "📷 Scan Kamera Langsung",
+                "🐱 Coba Contoh Foto",
+            ],
+            horizontal=True,
         )
 
-        selected_image = None
-        source_caption = ""
-
-        with mode_tab_upload:
+        if input_method == "📤 Pilih File / Galeri HP":
             st.caption(
-                "Pilih foto kucing dari komputer atau galeri/kamera HP Anda (mendukung JPG, JPEG, PNG, WEBP)."
+                "Tekan **Browse files** untuk memilih foto kucing dari Galeri HP atau komputer Anda."
             )
+            # TANPA filter type=[...] yang ketat agar Android Photo Picker / Galeri HP (content:// URI) tidak pernah ditolak
             uploaded_file = st.file_uploader(
-                "Pilih atau ambil foto kucing:",
-                type=["jpg", "jpeg", "png", "webp"],
-                key="uploader_kucing",
+                "Select File Foto Kucing (JPG / PNG / WEBP / HEIC):",
+                accept_multiple_files=False,
+                key="uploader_kucing_main",
             )
-            if uploaded_file is not None:
-                selected_image = Image.open(uploaded_file)
-                source_caption = f"File Diunggah: {uploaded_file.name}"
 
-        with mode_tab_camera:
+            if uploaded_file is not None:
+                try:
+                    raw_bytes = uploaded_file.getvalue()
+                    selected_filename = uploaded_file.name
+                    selected_filesize_kb = len(raw_bytes) / 1024.0
+                    selected_image = Image.open(io.BytesIO(raw_bytes))
+                    selected_image.load()
+                except Exception as e:
+                    upload_error_msg = (
+                        f"File '{uploaded_file.name}' bukan format gambar yang didukung ({e}). "
+                        "Silakan pilih file foto (JPG, JPEG, PNG, WEBP, atau HEIC)."
+                    )
+
+        elif input_method == "📷 Scan Kamera Langsung":
             st.caption(
                 "Arahkan kamera HP atau webcam laptop ke kucing Anda lalu tekan tombol **Take Photo**."
             )
-            enable_cam = st.checkbox("Aktifkan Kamera untuk Scan Langsung", value=False)
-            if enable_cam:
-                camera_photo = st.camera_input("Ambil Foto Kucing", key="cam_kucing")
-                if camera_photo is not None:
-                    selected_image = Image.open(camera_photo)
-                    source_caption = "Hasil Scan Kamera Langsung"
+            camera_photo = st.camera_input("Ambil Foto Kucing", key="cam_kucing_main")
+            if camera_photo is not None:
+                try:
+                    raw_bytes = camera_photo.getvalue()
+                    selected_filename = "hasil_scan_kamera.jpg"
+                    selected_filesize_kb = len(raw_bytes) / 1024.0
+                    selected_image = Image.open(io.BytesIO(raw_bytes))
+                    selected_image.load()
+                except Exception as e:
+                    upload_error_msg = f"Gagal membaca foto kamera: {e}"
 
-        with mode_tab_sample:
-            st.caption("Uji model secara instan menggunakan sampel citra kucing dari notebook:")
+        else:
+            st.caption("Pilih contoh foto kucing dari dataset `tubes_pcd.ipynb`:")
             sample_dict = get_notebook_sample_images()
             if sample_dict:
-                use_sample = st.checkbox("Gunakan Contoh Foto Kucing", value=False)
                 sample_name = st.selectbox(
-                    "Pilih Contoh Citra:",
+                    "Pilih Contoh Foto:",
                     options=list(sample_dict.keys()),
                 )
-                if use_sample and selected_image is None:
-                    selected_image = sample_dict[sample_name]
-                    source_caption = sample_name
-            else:
-                st.info("Contoh citra dari notebook tidak ditemukan.")
+                raw_bytes = sample_dict[sample_name]
+                selected_filename = f"{sample_name}.png"
+                selected_filesize_kb = len(raw_bytes) / 1024.0
+                selected_image = Image.open(io.BytesIO(raw_bytes))
+                selected_image.load()
 
+        if upload_error_msg:
+            st.error(upload_error_msg)
+
+        # Tampilkan Nama File Image yang Dipilih + Tombol Upload & Deteksi
         if selected_image is not None:
-            img_rgb, img_resized, arr_norm, input_tensor = preprocess_image_for_mobilenetv2(
-                selected_image
+            img_w, img_h = selected_image.size
+            file_id = f"{selected_filename}_{ len(raw_bytes) }"
+            is_already_uploaded = st.session_state.get("uploaded_file_id") == file_id
+
+            st.markdown(
+                f"""
+                <div class="file-selected-card">
+                    <div style="font-size:0.8rem; font-weight:700; text-transform:uppercase; color:#1d4ed8;">
+                        ✅ LANGKAH 1 SELESAI — FILE GAMBAR TERPILIH
+                    </div>
+                    <div style="font-size:1.08rem; font-weight:800; margin-top:0.25rem; word-break:break-all;">
+                        🖼️ Nama Image: {selected_filename}
+                    </div>
+                    <div style="font-size:0.85rem; margin-top:0.15rem; color:#334155;">
+                        Ukuran File: <b>{selected_filesize_kb:.1f} KB</b> • Resolusi: <b>{img_w} × {img_h} px</b>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
             )
-            st.image(img_rgb, caption=f"📷 {source_caption}", width="stretch")
 
-            with st.expander("🔍 Detail Tahapan Preprocessing (Sesuai tubes_pcd.ipynb)"):
-                p1, p2 = st.columns(2)
-                with p1:
-                    st.image(
-                        img_resized,
-                        caption="Hasil Resize: 224 × 224 px (RGB)",
-                        width="stretch",
-                    )
-                with p2:
-                    st.markdown("**Parameter Tensor Input:**")
-                    st.code(
-                        f"Resolusi Asli : {img_rgb.size[0]} × {img_rgb.size[1]} px\n"
-                        f"Mode Warna    : {img_rgb.mode} (3 Channel)\n"
-                        f"Ukuran Resize : 224 × 224 px\n"
-                        f"Bentuk Tensor : {input_tensor.shape}\n"
-                        f"Nilai Minimum : {arr_norm.min():.3f}\n"
-                        f"Nilai Maksimum: {arr_norm.max():.3f}\n"
-                        f"Normalisasi   : MobileNetV2 [-1, 1]"
-                    )
+            # Langkah 2: Tombol Upload & Identifikasi setelah file dipilih
+            if st.button("📤 Upload & Identifikasi Foto Ini Sekarang", type="primary"):
+                st.session_state["uploaded_file_id"] = file_id
+                is_already_uploaded = True
+                st.toast(f"✅ Mengunggah & memproses {selected_filename}...")
 
+            # Tampilkan pratinjau ukuran kompak agar di HP tidak memenuhi layar
+            st.image(
+                ImageOps.exif_transpose(selected_image).convert("RGB"),
+                caption=f"Nama Image: {selected_filename} ({img_w}×{img_h} px)",
+                width=280,
+            )
+        else:
+            is_already_uploaded = False
+
+    # Jalankan Deteksi setelah user menekan tombol Upload & Identifikasi
     with col_right:
         st.subheader("2️⃣ Hasil Identifikasi Ras Kucing")
+
         if selected_image is None:
             st.info(
-                "👈 Silakan **Upload foto kucing** dari galeri/komputer, gunakan **Scan Kamera**, "
-                "atau centang **Gunakan Contoh Foto Kucing** untuk melihat hasil identifikasi ras kucing."
+                "👈 **Langkah 1 (Select File):** Klik tombol **Browse files** untuk memilih foto kucing dari Galeri HP / File Manager.\n\n"
+                "**Langkah 2 (Cek Nama Image):** Pastikan **nama image** muncul di layar.\n\n"
+                "**Langkah 3 (Upload):** Klik tombol **📤 Upload & Identifikasi Foto Ini Sekarang**."
             )
             with st.container(border=True):
-                st.markdown("#### 💡 Tips Scan Foto Kucing yang Akurat")
+                st.markdown("#### 🐾 5 Ras Kucing yang Dapat Diidentifikasi")
                 st.markdown(
-                    "- Pastikan **wajah dan tubuh kucing** terlihat jelas serta mendapat pencahayaan yang cukup.\n"
-                    "- Di **HP**, Anda bisa menekan tombol **Upload / Galeri HP** (yang otomatis membuka opsi **Kamera** atau **Galeri Foto** di Android/iPhone) ataupun menggunakan tab **Scan Kamera**.\n"
-                    "- Model mengenali **5 ras kucing**: **Bengal**, **British Shorthair**, **Domestic Short Hair (Kampung/Domestik)**, **Persian**, dan **Turkish Angora**."
+                    "- 🐆 **Bengal** (`Bengal Cat`)\n"
+                    "- 🐻 **British Shorthair** (`BSH`)\n"
+                    "- 🐈 **Domestic Short Hair** (`Kucing Domestik / Kampung`)\n"
+                    "- 👑 **Persian** (`Kucing Persia`)\n"
+                    "- 🦢 **Turkish Angora** (`Kucing Angora`)"
                 )
+        elif not is_already_uploaded:
+            st.warning(
+                f"📄 File **`{selected_filename}`** sudah dipilih!\n\n"
+                "Silakan tekan tombol biru **📤 Upload & Identifikasi Foto Ini Sekarang** di bawah nama file untuk mulai mendeteksi ras kucing."
+            )
         else:
-            probs_dict, engine_label, infer_ms = predict_breed(input_tensor, labels_list)
-            sorted_preds = sorted(probs_dict.items(), key=lambda x: x[1], reverse=True)
-            top_breed, top_prob = sorted_preds[0]
-            top_pct = top_prob * 100.0
-            breed_info = BREED_KNOWLEDGE_BASE.get(top_breed, {})
+            with st.spinner(f"🔍 Sedang mendeteksi '{selected_filename}' dengan MobileNetV2..."):
+                img_rgb, img_resized, arr_norm, input_tensor = preprocess_image_for_mobilenetv2(
+                    selected_image
+                )
+                probs_dict, engine_label, infer_ms = predict_breed(input_tensor, labels_list)
+                sorted_preds = sorted(probs_dict.items(), key=lambda x: x[1], reverse=True)
+                top_breed, top_prob = sorted_preds[0]
+                top_pct = top_prob * 100.0
+                breed_info = BREED_KNOWLEDGE_BASE.get(top_breed, {})
+
             ikon = breed_info.get("ikon", "🐱")
             nama_lengkap = breed_info.get("nama_lengkap", top_breed)
 
             st.markdown(
                 f"""
                 <div class="pred-badge">
-                    <div style="font-size:0.88rem; opacity:0.9; margin-bottom:0.2rem;">HASIL IDENTIFIKASI RAS KUCING</div>
+                    <div style="font-size:0.84rem; opacity:0.92; margin-bottom:0.2rem;">
+                        📄 File: <b>{selected_filename}</b>
+                    </div>
                     <h2>{ikon} {nama_lengkap}</h2>
                     <div class="conf-pill">🎯 Tingkat Keyakinan (Confidence): {top_pct:.2f}%</div>
                     <div style="font-size:0.8rem; opacity:0.85; margin-top:0.45rem;">
@@ -738,15 +787,40 @@ with main_tab_scan:
 
             if breed_info:
                 with st.container(border=True):
-                    st.markdown(f"#### {ikon} Profil & Panduan Perawatan: **{breed_info['nama_populer']}**")
+                    st.markdown(
+                        f"#### {ikon} Profil & Panduan Perawatan: **{breed_info['nama_populer']}**"
+                    )
                     st.markdown(f"**🔎 Ciri Fisik Utama:**\n{breed_info['ciri_fisik']}")
                     c_info1, c_info2 = st.columns(2)
                     with c_info1:
                         st.markdown(f"**💛 Karakter & Sifat:**\n{breed_info['karakter']}")
-                        st.markdown(f"**💰 Estimasi Harga / Adopsi:**\n`{breed_info['estimasi_harga']}`")
+                        st.markdown(
+                            f"**💰 Estimasi Harga / Adopsi:**\n`{breed_info['estimasi_harga']}`"
+                        )
                     with c_info2:
                         st.markdown(f"**🧼 Panduan Perawatan:**\n{breed_info['perawatan']}")
                         st.markdown(f"**🩺 Catatan Kesehatan:**\n{breed_info['kesehatan']}")
+
+            with st.expander("🔍 Lihat Detail Tahapan Preprocessing (224 × 224 RGB)"):
+                p1, p2 = st.columns(2)
+                with p1:
+                    st.image(
+                        img_resized,
+                        caption="Hasil Resize: 224 × 224 px (RGB)",
+                        width="stretch",
+                    )
+                with p2:
+                    st.markdown("**Parameter Tensor Input:**")
+                    st.code(
+                        f"Nama File     : {selected_filename}\n"
+                        f"Resolusi Asli : {img_rgb.size[0]} × {img_rgb.size[1]} px\n"
+                        f"Mode Warna    : {img_rgb.mode} (3 Channel)\n"
+                        f"Ukuran Resize : 224 × 224 px\n"
+                        f"Bentuk Tensor : {input_tensor.shape}\n"
+                        f"Nilai Minimum : {arr_norm.min():.3f}\n"
+                        f"Nilai Maksimum: {arr_norm.max():.3f}\n"
+                        f"Normalisasi   : MobileNetV2 [-1, 1]"
+                    )
 
 
 # ==================== TAB 2: ENSIKLOPEDIA 5 RAS KUCING ====================
